@@ -7,7 +7,15 @@ The compiler's architecture was recently refactored to completely separate the *
 ---
 
 ## Pipeline Architecture
-[SourceCode: .txt] ➔ (Frontend: compiler) ➔ [TAC: .tac] ➔ (Backend: codegen) ➔ [Assembly: .s] ➔ (Linker: gcc) ➔ [Executable]
+<p align="center">
+SourceCode (.txt)
+→ <strong>Frontend</strong>
+→ TAC (.tac)
+→ <strong>Backend</strong>
+→ Assembly (.s)
+→ <strong>Linker (gcc)</strong>
+→ Executable
+</p>
 
 1. **Frontend (`compiler`)**: Developed using Flex/Bison (`lexer.l` and `parser.y`). It performs lexical, syntactic, and semantic analyses (type checking and scopes). Then, it generates the TAC in memory, applies local optimizations, and writes to the self-contained `output.tac` file.
 2. **Backend (`codegen`)**: An independent program in pure C (`backend.c`). It reads `output.tac` line by line, performs linear mapping of local variables on the stack frame (`-8(%rbp)`, `-16(%rbp)`, etc.), and translates the instructions linearly to x86_64 Assembly (`output.s`).
