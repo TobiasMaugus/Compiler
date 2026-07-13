@@ -14,4 +14,4 @@ exec:
 	./executable
 
 clean:
-	rm -f compiler codegen parser.tab.c parser.tab.h lex.yy.c executable
+	rm -f compiler codegen parser.tab.c parser.tab.h lex.yy.c output.tac output.s executable
