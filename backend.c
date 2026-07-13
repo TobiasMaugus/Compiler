@@ -1,0 +1,755 @@
+/* ========================================================================= */
+/* BACKEND DO COMPILADOR — Leitor de TAC → Gerador de Assembly x86_64        */
+/* Programa independente: ./codegen output.tac → output.s                    */
+/* ========================================================================= */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+
+/* ========================================================================= */
+/* MAPA DE VARIÁVEIS DA FUNÇÃO ATUAL (PILHA x86_64)                          */
+/* ========================================================================= */
+
+typedef struct {
+    char name[64];
+    int offset;
+    char type[10]; /* "int" ou "float" */
+} VarSlot;
+
+#define MAX_VARS 500
+VarSlot var_map[MAX_VARS];
+int var_count = 0;
+int frame_size = 0;
+
+/* Tabela de tipos de retorno das funções já declaradas */
+typedef struct {
+    char name[64];
+    char ret_type[10];
+} FuncInfo;
+
+#define MAX_FUNCS 100
+FuncInfo func_table[MAX_FUNCS];
+int func_count = 0;
+
+/* Buffer de parâmetros para chamadas de função */
+#define MAX_PARAMS 10
+char param_buffer[MAX_PARAMS][64];
+int param_count = 0;
+
+FILE *asm_out = NULL;
+
+/* ========================================================================= */
+/* HELPERS DE CONTEXTO                                                        */
+/* ========================================================================= */
+
+void reset_function_context() {
+    var_count = 0;
+    frame_size = 0;
+    param_count = 0;
+}
+
+int get_offset(const char *name) {
+    for (int i = 0; i < var_count; i++) {
+        if (strcmp(var_map[i].name, name) == 0)
+            return var_map[i].offset;
+    }
+    /* Aloca novo slot de 8 bytes */
+    frame_size += 8;
+    strcpy(var_map[var_count].name, name);
+    var_map[var_count].offset = -frame_size;
+    strcpy(var_map[var_count].type, "int"); /* tipo padrão */
+    var_count++;
+    return -frame_size;
+}
+
+void set_var_type(const char *name, const char *type) {
+    get_offset(name); /* garante que o slot existe */
+    for (int i = 0; i < var_count; i++) {
+        if (strcmp(var_map[i].name, name) == 0) {
+            strcpy(var_map[i].type, type);
+            return;
+        }
+    }
+}
+
+const char* get_var_type(const char *name) {
+    for (int i = 0; i < var_count; i++) {
+        if (strcmp(var_map[i].name, name) == 0)
+            return var_map[i].type;
+    }
+    return "int"; /* fallback */
+}
+
+void register_func(const char *name, const char *ret_type) {
+    for (int i = 0; i < func_count; i++) {
+        if (strcmp(func_table[i].name, name) == 0) return; /* já registrada */
+    }
+    strcpy(func_table[func_count].name, name);
+    strcpy(func_table[func_count].ret_type, ret_type);
+    func_count++;
+}
+
+const char* get_func_ret_type(const char *name) {
+    for (int i = 0; i < func_count; i++) {
+        if (strcmp(func_table[i].name, name) == 0)
+            return func_table[i].ret_type;
+    }
+    return "int"; /* fallback */
+}
+
+/* ========================================================================= */
+/* HELPERS DE PARSING                                                         */
+/* ========================================================================= */
+
+int is_int_literal(const char *s) {
+    if (!s || !*s) return 0;
+    int i = 0;
+    if (s[0] == '-' || s[0] == '+') i = 1;
+    if (!s[i]) return 0;
+    for (; s[i]; i++) {
+        if (!isdigit((unsigned char)s[i])) return 0;
+    }
+    return 1;
+}
+
+int is_float_literal(const char *s) {
+    if (!s || !*s) return 0;
+    int i = 0, dot = 0;
+    if (s[0] == '-' || s[0] == '+') i = 1;
+    if (!s[i]) return 0;
+    for (; s[i]; i++) {
+        if (s[i] == '.') { dot++; if (dot > 1) return 0; }
+        else if (!isdigit((unsigned char)s[i])) return 0;
+    }
+    return (dot >= 1);
+}
+
+char* trim(char *s) {
+    while (*s && isspace((unsigned char)*s)) s++;
+    char *end = s + strlen(s) - 1;
+    while (end >= s && isspace((unsigned char)*end)) { *end = '\0'; end--; }
+    return s;
+}
+
+/* ========================================================================= */
+/* HELPERS DE EMISSÃO DE ASSEMBLY                                             */
+/* ========================================================================= */
+
+/* Carrega um operando (literal ou variável) para %rax (int) */
+void load_int_operand(const char *operand) {
+    if (is_int_literal(operand)) {
+        fprintf(asm_out, "    movq $%s, %%rax\n", operand);
+    } else {
+        int off = get_offset(operand);
+        fprintf(asm_out, "    movq %d(%%rbp), %%rax\n", off);
+    }
+}
+
+/* Materializa um operando int na pilha e retorna o offset */
+int materialize_int(const char *operand) {
+    if (is_int_literal(operand)) {
+        /* Cria um temporário interno para o literal */
+        char tmp_name[80];
+        sprintf(tmp_name, "__lit_%s", operand);
+        /* Substitui sinal negativo por 'n' para nome válido */
+        for (int i = 0; tmp_name[i]; i++) {
+            if (tmp_name[i] == '-') tmp_name[i] = 'n';
+        }
+        int off = get_offset(tmp_name);
+        set_var_type(tmp_name, "int");
+        fprintf(asm_out, "    movq $%s, %%rax\n", operand);
+        fprintf(asm_out, "    movq %%rax, %d(%%rbp)\n", off);
+        return off;
+    }
+    return get_offset(operand);
+}
+
+/* Materializa um operando float na pilha e retorna o offset */
+int materialize_float(const char *operand) {
+    if (is_float_literal(operand)) {
+        char tmp_name[80];
+        sprintf(tmp_name, "__flit_%.0f", atof(operand));
+        int off = get_offset(tmp_name);
+        set_var_type(tmp_name, "float");
+        float val = (float)atof(operand);
+        unsigned int bits;
+        memcpy(&bits, &val, sizeof(float));
+        fprintf(asm_out, "    movl $%u, %%eax\n", bits);
+        fprintf(asm_out, "    movl %%eax, %d(%%rbp)\n", off);
+        return off;
+    }
+    return get_offset(operand);
+}
+
+/* ========================================================================= */
+/* PROCESSAMENTO DE CADA LINHA DO TAC                                         */
+/* ========================================================================= */
+
+void process_line(char *raw_line) {
+    char line[512];
+    strncpy(line, raw_line, sizeof(line) - 1);
+    line[sizeof(line) - 1] = '\0';
+    
+    char *trimmed = trim(line);
+    if (!*trimmed) return; /* linha vazia */
+    
+    /* ================================================================== */
+    /* func <nome> <tipo> params: [<tipo> <param>, ...]                   */
+    /* ================================================================== */
+    if (strncmp(trimmed, "func ", 5) == 0) {
+        reset_function_context();
+        
+        char name[64], ret_type[10];
+        char *p = trimmed + 5;
+        sscanf(p, "%63s %9s", name, ret_type);
+        register_func(name, ret_type);
+        
+        /* Prólogo da função */
+        fprintf(asm_out, ".global %s\n", name);
+        fprintf(asm_out, "%s:\n", name);
+        fprintf(asm_out, "    pushq %%rbp\n");
+        fprintf(asm_out, "    movq %%rsp, %%rbp\n");
+        fprintf(asm_out, "    subq $400, %%rsp\n");
+        
+        /* Parse dos parâmetros */
+        char *params_start = strstr(trimmed, "params:");
+        if (params_start) {
+            params_start += 7; /* pula "params:" */
+            while (isspace((unsigned char)*params_start)) params_start++;
+            
+            if (*params_start) {
+                /* Copia para buffer local (strtok modifica) */
+                char params_buf[256];
+                strncpy(params_buf, params_start, sizeof(params_buf) - 1);
+                params_buf[sizeof(params_buf) - 1] = '\0';
+                
+                int int_reg_idx = 0;
+                int float_reg_idx = 0;
+                const char *int_regs[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
+                
+                char *token = strtok(params_buf, ",");
+                while (token) {
+                    while (isspace((unsigned char)*token)) token++;
+                    char ptype[10], pname[64];
+                    if (sscanf(token, "%9s %63s", ptype, pname) == 2) {
+                        int off = get_offset(pname);
+                        set_var_type(pname, ptype);
+                        
+                        if (strcmp(ptype, "float") == 0) {
+                            fprintf(asm_out, "    movss %%xmm%d, %d(%%rbp)\n", float_reg_idx++, off);
+                        } else {
+                            fprintf(asm_out, "    movq %s, %d(%%rbp)\n", int_regs[int_reg_idx++], off);
+                        }
+                    }
+                    token = strtok(NULL, ",");
+                }
+            }
+        }
+        return;
+    }
+    
+    /* ================================================================== */
+    /* endfunc                                                             */
+    /* ================================================================== */
+    if (strcmp(trimmed, "endfunc") == 0) {
+        fprintf(asm_out, "    leave\n");
+        fprintf(asm_out, "    ret\n");
+        return;
+    }
+    
+    /* ================================================================== */
+    /* Labels  (ex: L1:)                                                   */
+    /* ================================================================== */
+    {
+        int len = strlen(trimmed);
+        if (len > 1 && trimmed[len - 1] == ':') {
+            /* Verifica que não contém espaço (senão não é label) */
+            int has_space = 0;
+            for (int i = 0; i < len - 1; i++) {
+                if (isspace((unsigned char)trimmed[i])) { has_space = 1; break; }
+            }
+            if (!has_space) {
+                fprintf(asm_out, "%s\n", trimmed);
+                return;
+            }
+        }
+    }
+    
+    /* ================================================================== */
+    /* goto <label>                                                        */
+    /* ================================================================== */
+    if (strncmp(trimmed, "goto ", 5) == 0) {
+        char label[64];
+        sscanf(trimmed + 5, "%63s", label);
+        fprintf(asm_out, "    jmp %s\n", label);
+        return;
+    }
+    
+    /* ================================================================== */
+    /* if <a> <op> <b> goto <label>   (salto condicional)                  */
+    /* ================================================================== */
+    if (strncmp(trimmed, "if ", 3) == 0) {
+        char a[64], op[16], b[64], label[64], dummy[8];
+        
+        if (sscanf(trimmed, "if %63s %15s %63s goto %63s", a, op, b, label) == 4) {
+            /* Verifica se é comparação float (operador termina com 'f') */
+            int is_float_cmp = 0;
+            char clean_op[16];
+            strcpy(clean_op, op);
+            int oplen = strlen(clean_op);
+            if (oplen > 1 && clean_op[oplen - 1] == 'f') {
+                clean_op[oplen - 1] = '\0';
+                is_float_cmp = 1;
+            }
+            
+            if (is_float_cmp) {
+                /* Comparação float: ucomiss */
+                int off_a = materialize_float(a);
+                int off_b = materialize_float(b);
+                
+                fprintf(asm_out, "    movss %d(%%rbp), %%xmm0\n", off_a);
+                fprintf(asm_out, "    ucomiss %d(%%rbp), %%xmm0\n", off_b);
+                
+                if (strcmp(clean_op, "<") == 0)       fprintf(asm_out, "    jb %s\n", label);
+                else if (strcmp(clean_op, ">") == 0)  fprintf(asm_out, "    ja %s\n", label);
+                else if (strcmp(clean_op, "<=") == 0) fprintf(asm_out, "    jbe %s\n", label);
+                else if (strcmp(clean_op, ">=") == 0) fprintf(asm_out, "    jae %s\n", label);
+                else if (strcmp(clean_op, "==") == 0) fprintf(asm_out, "    je %s\n", label);
+                else if (strcmp(clean_op, "!=") == 0) fprintf(asm_out, "    jne %s\n", label);
+            } else {
+                /* Comparação int: cmpq */
+                int off_a, off_b;
+                
+                /* Carrega operando A em %rax */
+                if (is_int_literal(a)) {
+                    off_a = materialize_int(a);
+                } else {
+                    off_a = get_offset(a);
+                }
+                
+                /* Carrega operando B na pilha (para usar com cmpq) */
+                if (is_int_literal(b)) {
+                    off_b = materialize_int(b);
+                } else {
+                    off_b = get_offset(b);
+                }
+                
+                fprintf(asm_out, "    movq %d(%%rbp), %%rax\n", off_a);
+                fprintf(asm_out, "    cmpq %d(%%rbp), %%rax\n", off_b);
+                
+                if (strcmp(clean_op, "<") == 0)       fprintf(asm_out, "    jl %s\n", label);
+                else if (strcmp(clean_op, ">") == 0)  fprintf(asm_out, "    jg %s\n", label);
+                else if (strcmp(clean_op, "<=") == 0) fprintf(asm_out, "    jle %s\n", label);
+                else if (strcmp(clean_op, ">=") == 0) fprintf(asm_out, "    jge %s\n", label);
+                else if (strcmp(clean_op, "==") == 0) fprintf(asm_out, "    je %s\n", label);
+                else if (strcmp(clean_op, "!=") == 0) fprintf(asm_out, "    jne %s\n", label);
+            }
+            return;
+        }
+    }
+    
+    /* ================================================================== */
+    /* return [<valor>]                                                     */
+    /* ================================================================== */
+    if (strncmp(trimmed, "return", 6) == 0 &&
+        (trimmed[6] == '\0' || trimmed[6] == ' ')) {
+        char val[64];
+        if (sscanf(trimmed, "return %63s", val) == 1) {
+            if (is_int_literal(val)) {
+                fprintf(asm_out, "    movq $%s, %%rax\n", val);
+            } else if (is_float_literal(val)) {
+                int off = materialize_float(val);
+                fprintf(asm_out, "    movss %d(%%rbp), %%xmm0\n", off);
+            } else {
+                int off = get_offset(val);
+                const char *vtype = get_var_type(val);
+                if (strcmp(vtype, "float") == 0) {
+                    fprintf(asm_out, "    movss %d(%%rbp), %%xmm0\n", off);
+                } else {
+                    fprintf(asm_out, "    movq %d(%%rbp), %%rax\n", off);
+                }
+            }
+        }
+        fprintf(asm_out, "    leave\n");
+        fprintf(asm_out, "    ret\n");
+        return;
+    }
+    
+    /* ================================================================== */
+    /* print_int <x>                                                       */
+    /* ================================================================== */
+    if (strncmp(trimmed, "print_int ", 10) == 0) {
+        char var[64];
+        sscanf(trimmed + 10, "%63s", var);
+        int off;
+        if (is_int_literal(var)) {
+            off = materialize_int(var);
+        } else {
+            off = get_offset(var);
+        }
+        fprintf(asm_out, "    movq %d(%%rbp), %%rsi\n", off);
+        fprintf(asm_out, "    leaq .str_print_int(%%rip), %%rdi\n");
+        fprintf(asm_out, "    movb $0, %%al\n");
+        fprintf(asm_out, "    call printf\n");
+        return;
+    }
+    
+    /* ================================================================== */
+    /* print_float <x>                                                     */
+    /* ================================================================== */
+    if (strncmp(trimmed, "print_float ", 12) == 0) {
+        char var[64];
+        sscanf(trimmed + 12, "%63s", var);
+        int off;
+        if (is_float_literal(var)) {
+            off = materialize_float(var);
+        } else {
+            off = get_offset(var);
+        }
+        fprintf(asm_out, "    cvtss2sd %d(%%rbp), %%xmm0\n", off);
+        fprintf(asm_out, "    leaq .str_print_float(%%rip), %%rdi\n");
+        fprintf(asm_out, "    movb $1, %%al\n");
+        fprintf(asm_out, "    call printf\n");
+        return;
+    }
+    
+    /* ================================================================== */
+    /* read_int <x>                                                        */
+    /* ================================================================== */
+    if (strncmp(trimmed, "read_int ", 9) == 0) {
+        char var[64];
+        sscanf(trimmed + 9, "%63s", var);
+        int off = get_offset(var);
+        set_var_type(var, "int");
+        fprintf(asm_out, "    leaq .str_read_int(%%rip), %%rdi\n");
+        fprintf(asm_out, "    leaq %d(%%rbp), %%rsi\n", off);
+        fprintf(asm_out, "    movb $0, %%al\n");
+        fprintf(asm_out, "    call scanf\n");
+        return;
+    }
+    
+    /* ================================================================== */
+    /* read_float <x>                                                      */
+    /* ================================================================== */
+    if (strncmp(trimmed, "read_float ", 11) == 0) {
+        char var[64];
+        sscanf(trimmed + 11, "%63s", var);
+        int off = get_offset(var);
+        set_var_type(var, "float");
+        fprintf(asm_out, "    leaq .str_read_float(%%rip), %%rdi\n");
+        fprintf(asm_out, "    leaq %d(%%rbp), %%rsi\n", off);
+        fprintf(asm_out, "    movb $0, %%al\n");
+        fprintf(asm_out, "    call scanf\n");
+        return;
+    }
+    
+    /* ================================================================== */
+    /* param <x>   (armazena no buffer para a próxima instrução call)      */
+    /* ================================================================== */
+    if (strncmp(trimmed, "param ", 6) == 0) {
+        char var[64];
+        sscanf(trimmed + 6, "%63s", var);
+        if (param_count < MAX_PARAMS) {
+            strcpy(param_buffer[param_count++], var);
+        }
+        return;
+    }
+    
+    /* ================================================================== */
+    /* <dest> = call <func>, <nargs>                                       */
+    /* ================================================================== */
+    {
+        char dest[64], func_name[64];
+        int nargs;
+        if (sscanf(trimmed, "%63s = call %63[^,], %d", dest, func_name, &nargs) == 3) {
+            /* Carrega os parâmetros do buffer nos registradores da ABI */
+            int int_reg_idx = 0;
+            int float_reg_idx = 0;
+            const char *int_regs[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
+            
+            for (int i = 0; i < param_count; i++) {
+                const char *pval = param_buffer[i];
+                
+                if (is_int_literal(pval)) {
+                    fprintf(asm_out, "    movq $%s, %s\n", pval, int_regs[int_reg_idx++]);
+                } else if (is_float_literal(pval)) {
+                    int off = materialize_float(pval);
+                    fprintf(asm_out, "    movss %d(%%rbp), %%xmm%d\n", off, float_reg_idx++);
+                } else {
+                    int off = get_offset(pval);
+                    const char *ptype = get_var_type(pval);
+                    if (strcmp(ptype, "float") == 0) {
+                        fprintf(asm_out, "    movss %d(%%rbp), %%xmm%d\n", off, float_reg_idx++);
+                    } else {
+                        fprintf(asm_out, "    movq %d(%%rbp), %s\n", off, int_regs[int_reg_idx++]);
+                    }
+                }
+            }
+            
+            fprintf(asm_out, "    movb $%d, %%al\n", float_reg_idx);
+            fprintf(asm_out, "    call %s\n", func_name);
+            
+            /* Guarda o resultado */
+            const char *ret_type = get_func_ret_type(func_name);
+            int off_dest = get_offset(dest);
+            set_var_type(dest, ret_type);
+            
+            if (strcmp(ret_type, "float") == 0) {
+                fprintf(asm_out, "    movss %%xmm0, %d(%%rbp)\n", off_dest);
+            } else {
+                fprintf(asm_out, "    movq %%rax, %d(%%rbp)\n", off_dest);
+            }
+            
+            param_count = 0; /* limpa o buffer */
+            return;
+        }
+    }
+    
+    /* ================================================================== */
+    /* <dest> = (float) <src>   (cast int → float)                         */
+    /* ================================================================== */
+    {
+        char dest[64], src[64];
+        if (sscanf(trimmed, "%63s = (float) %63s", dest, src) == 2) {
+            int off_src = get_offset(src);
+            int off_dest = get_offset(dest);
+            set_var_type(dest, "float");
+            /* cvtsi2ss espera um inteiro de 64 bits */
+            fprintf(asm_out, "    movq %d(%%rbp), %%rax\n", off_src);
+            fprintf(asm_out, "    cvtsi2ss %%eax, %%xmm0\n");
+            fprintf(asm_out, "    movss %%xmm0, %d(%%rbp)\n", off_dest);
+            return;
+        }
+    }
+    
+    /* ================================================================== */
+    /* <dest> = <op_unario> <src>  (minus, minusf, !)                      */
+    /* ================================================================== */
+    {
+        char dest[64], unop[16], src[64];
+        if (sscanf(trimmed, "%63s = %15s %63s", dest, unop, src) == 3) {
+            /* Verifica se é realmente um operador unário (e não parte de uma binop) */
+            if (strcmp(unop, "minus") == 0) {
+                int off_src = get_offset(src);
+                int off_dest = get_offset(dest);
+                set_var_type(dest, "int");
+                fprintf(asm_out, "    movq %d(%%rbp), %%rax\n", off_src);
+                fprintf(asm_out, "    negq %%rax\n");
+                fprintf(asm_out, "    movq %%rax, %d(%%rbp)\n", off_dest);
+                return;
+            }
+            if (strcmp(unop, "minusf") == 0) {
+                int off_src = get_offset(src);
+                int off_dest = get_offset(dest);
+                set_var_type(dest, "float");
+                fprintf(asm_out, "    xorps %%xmm0, %%xmm0\n");
+                fprintf(asm_out, "    subss %d(%%rbp), %%xmm0\n", off_src);
+                fprintf(asm_out, "    movss %%xmm0, %d(%%rbp)\n", off_dest);
+                return;
+            }
+            if (strcmp(unop, "!") == 0) {
+                int off_src = get_offset(src);
+                int off_dest = get_offset(dest);
+                set_var_type(dest, "int");
+                fprintf(asm_out, "    cmpq $0, %d(%%rbp)\n", off_src);
+                fprintf(asm_out, "    sete %%al\n");
+                fprintf(asm_out, "    movzbq %%al, %%rax\n");
+                fprintf(asm_out, "    movq %%rax, %d(%%rbp)\n", off_dest);
+                return;
+            }
+        }
+    }
+    
+    /* ================================================================== */
+    /* <dest> = <a> <op> <b>  (operação binária int ou float)              */
+    /* ================================================================== */
+    {
+        char dest[64], a[64], op[16], b[64];
+        if (sscanf(trimmed, "%63s = %63s %15s %63s", dest, a, op, b) == 4) {
+            /* Verifica se é operador float (sufixo 'f') */
+            int is_float_op = 0;
+            char clean_op[16];
+            strcpy(clean_op, op);
+            int oplen = strlen(clean_op);
+            if (oplen > 1 && clean_op[oplen - 1] == 'f') {
+                clean_op[oplen - 1] = '\0';
+                is_float_op = 1;
+            }
+            
+            int off_dest = get_offset(dest);
+            
+            if (is_float_op) {
+                /* ---- OPERAÇÃO FLOAT ---- */
+                set_var_type(dest, "float");
+                
+                int off_a = materialize_float(a);
+                int off_b = materialize_float(b);
+                
+                fprintf(asm_out, "    movss %d(%%rbp), %%xmm0\n", off_a);
+                
+                /* Aritméticos */
+                if (strcmp(clean_op, "+") == 0)      fprintf(asm_out, "    addss %d(%%rbp), %%xmm0\n", off_b);
+                else if (strcmp(clean_op, "-") == 0) fprintf(asm_out, "    subss %d(%%rbp), %%xmm0\n", off_b);
+                else if (strcmp(clean_op, "*") == 0) fprintf(asm_out, "    mulss %d(%%rbp), %%xmm0\n", off_b);
+                else if (strcmp(clean_op, "/") == 0) fprintf(asm_out, "    divss %d(%%rbp), %%xmm0\n", off_b);
+                /* Relacionais float (resultado é int: 0 ou 1) */
+                else if (strcmp(clean_op, "<") == 0 || strcmp(clean_op, ">") == 0 ||
+                         strcmp(clean_op, "<=") == 0 || strcmp(clean_op, ">=") == 0 ||
+                         strcmp(clean_op, "==") == 0 || strcmp(clean_op, "!=") == 0) {
+                    
+                    fprintf(asm_out, "    ucomiss %d(%%rbp), %%xmm0\n", off_b);
+                    
+                    if (strcmp(clean_op, "<") == 0)       fprintf(asm_out, "    setb %%al\n");
+                    else if (strcmp(clean_op, ">") == 0)  fprintf(asm_out, "    seta %%al\n");
+                    else if (strcmp(clean_op, "<=") == 0) fprintf(asm_out, "    setbe %%al\n");
+                    else if (strcmp(clean_op, ">=") == 0) fprintf(asm_out, "    setae %%al\n");
+                    else if (strcmp(clean_op, "==") == 0) fprintf(asm_out, "    sete %%al\n");
+                    else if (strcmp(clean_op, "!=") == 0) fprintf(asm_out, "    setne %%al\n");
+                    
+                    fprintf(asm_out, "    movzbq %%al, %%rax\n");
+                    fprintf(asm_out, "    movq %%rax, %d(%%rbp)\n", off_dest);
+                    set_var_type(dest, "int"); /* resultado de comparação é int */
+                    return;
+                }
+                
+                fprintf(asm_out, "    movss %%xmm0, %d(%%rbp)\n", off_dest);
+            } else {
+                /* ---- OPERAÇÃO INT ---- */
+                set_var_type(dest, "int");
+                
+                int off_a = materialize_int(a);
+                int off_b = materialize_int(b);
+                
+                fprintf(asm_out, "    movq %d(%%rbp), %%rax\n", off_a);
+                
+                /* Aritméticos */
+                if (strcmp(clean_op, "+") == 0)      fprintf(asm_out, "    addq %d(%%rbp), %%rax\n", off_b);
+                else if (strcmp(clean_op, "-") == 0) fprintf(asm_out, "    subq %d(%%rbp), %%rax\n", off_b);
+                else if (strcmp(clean_op, "*") == 0) fprintf(asm_out, "    imulq %d(%%rbp), %%rax\n", off_b);
+                else if (strcmp(clean_op, "/") == 0 || strcmp(clean_op, "%") == 0) {
+                    fprintf(asm_out, "    cqto\n");
+                    fprintf(asm_out, "    idivq %d(%%rbp)\n", off_b);
+                    if (strcmp(clean_op, "%") == 0) fprintf(asm_out, "    movq %%rdx, %%rax\n");
+                }
+                /* Relacionais int */
+                else if (strcmp(clean_op, "<") == 0 || strcmp(clean_op, ">") == 0 ||
+                         strcmp(clean_op, "<=") == 0 || strcmp(clean_op, ">=") == 0 ||
+                         strcmp(clean_op, "==") == 0 || strcmp(clean_op, "!=") == 0) {
+                    
+                    fprintf(asm_out, "    cmpq %d(%%rbp), %%rax\n", off_b);
+                    
+                    if (strcmp(clean_op, "<") == 0)       fprintf(asm_out, "    setl %%al\n");
+                    else if (strcmp(clean_op, ">") == 0)  fprintf(asm_out, "    setg %%al\n");
+                    else if (strcmp(clean_op, "<=") == 0) fprintf(asm_out, "    setle %%al\n");
+                    else if (strcmp(clean_op, ">=") == 0) fprintf(asm_out, "    setge %%al\n");
+                    else if (strcmp(clean_op, "==") == 0) fprintf(asm_out, "    sete %%al\n");
+                    else if (strcmp(clean_op, "!=") == 0) fprintf(asm_out, "    setne %%al\n");
+                    
+                    fprintf(asm_out, "    movzbq %%al, %%rax\n");
+                }
+                /* Lógicos (&&, ||) — avaliação simples (sem curto-circuito em expr) */
+                else if (strcmp(clean_op, "&&") == 0) {
+                    fprintf(asm_out, "    cmpq $0, %%rax\n");
+                    fprintf(asm_out, "    setne %%al\n");
+                    fprintf(asm_out, "    movzbq %%al, %%rax\n");
+                    fprintf(asm_out, "    cmpq $0, %d(%%rbp)\n", off_b);
+                    fprintf(asm_out, "    setne %%cl\n");
+                    fprintf(asm_out, "    andb %%cl, %%al\n");
+                    fprintf(asm_out, "    movzbq %%al, %%rax\n");
+                }
+                else if (strcmp(clean_op, "||") == 0) {
+                    fprintf(asm_out, "    orq %d(%%rbp), %%rax\n", off_b);
+                    fprintf(asm_out, "    cmpq $0, %%rax\n");
+                    fprintf(asm_out, "    setne %%al\n");
+                    fprintf(asm_out, "    movzbq %%al, %%rax\n");
+                }
+                
+                fprintf(asm_out, "    movq %%rax, %d(%%rbp)\n", off_dest);
+            }
+            return;
+        }
+    }
+    
+    /* ================================================================== */
+    /* <dest> = <valor>  (atribuição simples: cópia ou literal)            */
+    /* ================================================================== */
+    {
+        char dest[64], val[64];
+        if (sscanf(trimmed, "%63s = %63s", dest, val) == 2) {
+            int off_dest = get_offset(dest);
+            
+            if (is_int_literal(val)) {
+                set_var_type(dest, "int");
+                fprintf(asm_out, "    movq $%s, %%rax\n", val);
+                fprintf(asm_out, "    movq %%rax, %d(%%rbp)\n", off_dest);
+            } else if (is_float_literal(val)) {
+                set_var_type(dest, "float");
+                float fval = (float)atof(val);
+                unsigned int bits;
+                memcpy(&bits, &fval, sizeof(float));
+                fprintf(asm_out, "    movl $%u, %%eax\n", bits);
+                fprintf(asm_out, "    movl %%eax, %d(%%rbp)\n", off_dest);
+            } else {
+                /* Cópia de variável/temporário */
+                int off_src = get_offset(val);
+                const char *src_type = get_var_type(val);
+                set_var_type(dest, src_type);
+                
+                if (strcmp(src_type, "float") == 0) {
+                    fprintf(asm_out, "    movss %d(%%rbp), %%xmm0\n", off_src);
+                    fprintf(asm_out, "    movss %%xmm0, %d(%%rbp)\n", off_dest);
+                } else {
+                    fprintf(asm_out, "    movq %d(%%rbp), %%rax\n", off_src);
+                    fprintf(asm_out, "    movq %%rax, %d(%%rbp)\n", off_dest);
+                }
+            }
+            return;
+        }
+    }
+}
+
+/* ========================================================================= */
+/* MAIN — LEITURA DO TAC E GERAÇÃO DO ASSEMBLY                               */
+/* ========================================================================= */
+
+int main(int argc, char *argv[]) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: ./codegen <file.tac>\n");
+        return 1;
+    }
+    
+    FILE *tac = fopen(argv[1], "r");
+    if (!tac) {
+        fprintf(stderr, "Error: cannot open '%s'\n", argv[1]);
+        return 1;
+    }
+    
+    asm_out = fopen("output.s", "w");
+    if (!asm_out) {
+        fprintf(stderr, "Error: cannot create output.s\n");
+        fclose(tac);
+        return 1;
+    }
+    
+    /* Seção de dados: strings de formatação para print/read */
+    fprintf(asm_out, ".data\n");
+    fprintf(asm_out, ".str_print_int: .string \"%%ld\\n\"\n");
+    fprintf(asm_out, ".str_print_float: .string \"%%f\\n\"\n");
+    fprintf(asm_out, ".str_read_int: .string \"%%d\"\n");
+    fprintf(asm_out, ".str_read_float: .string \"%%f\"\n");
+    fprintf(asm_out, ".text\n\n");
+    
+    /* Processa cada linha do TAC */
+    char line[512];
+    while (fgets(line, sizeof(line), tac)) {
+        process_line(line);
+    }
+    
+    fclose(tac);
+    fclose(asm_out);
+    
+    printf("Assembly gerado com sucesso: 'output.s'\n");
+    return 0;
+}

@@ -1,0 +1,32 @@
+int isPrime(int n) {
+    int i = 2;
+    
+    if (n < 2) {
+        return 0;
+    }
+
+    while (i < n) {
+        if (n % i == 0) {
+            return 0;
+        }
+        i = i + 1;
+    }
+
+    return 1;
+}
+
+int main() {
+    int num = 1;
+    int resultado = 0;
+
+    while (num > 0) {
+        read(num);
+        
+        if (num > 0) {
+            resultado = isPrime(num);
+            print(resultado);
+        }
+    }
+
+    return 0;
+}
