@@ -141,6 +141,8 @@ FLOATNUM   {DIGIT}+"."{DIGIT}+
 ")" { print_token("RPAREN", yytext); column += yyleng; return RPAREN; }
 "{" { print_token("LBRACE", yytext); column += yyleng; return LBRACE; }
 "}" { print_token("RBRACE", yytext); column += yyleng; return RBRACE; }
+"[" { print_token("LBRACKET", yytext); column += yyleng; return LBRACKET; }
+"]" { print_token("RBRACKET", yytext); column += yyleng; return RBRACKET; }
 
 %{
 /* ------------------------ LITERAIS & IDENTIFICADORES ------------------------ */

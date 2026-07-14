@@ -90,6 +90,32 @@ int get_offset_typed(const char *name, const char *type)
     return -frame_size;
 }
 
+int array_slot_size_for_type(const char *type)
+{
+    if (type && strcmp(type, "char") == 0)
+        return 1;
+    if (type && strcmp(type, "string") == 0)
+        return STRING_BUF_SIZE;
+    return 8;
+}
+
+int get_offset_typed_array(const char *name, const char *type, int total_bytes)
+{
+    for (int i = 0; i < var_count; i++)
+    {
+        if (strcmp(var_map[i].name, name) == 0)
+            return var_map[i].offset;
+    }
+    int size = total_bytes;
+    frame_size += size;
+    strcpy(var_map[var_count].name, name);
+    var_map[var_count].offset = -frame_size;
+    var_map[var_count].size = size;
+    strcpy(var_map[var_count].type, type ? type : "int");
+    var_count++;
+    return -frame_size;
+}
+
 int get_offset(const char *name)
 {
     return get_offset_typed(name, "int");
@@ -182,6 +208,37 @@ int is_float_literal(const char *s)
             return 0;
     }
     return (dot >= 1);
+}
+
+char *trim(char *s);
+
+int parse_array_access(const char *text, char *array_name, char *index_expr)
+{
+    if (!text || !array_name || !index_expr)
+        return 0;
+
+    char buffer[256];
+    strncpy(buffer, text, sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+
+    char *open = strchr(buffer, '[');
+    char *close = strrchr(buffer, ']');
+    if (!open || !close || close <= open)
+        return 0;
+
+    *open = '\0';
+    *close = '\0';
+
+    char *name = trim(buffer);
+    char *index = trim(open + 1);
+    if (!name[0] || !index[0])
+        return 0;
+
+    strncpy(array_name, name, 63);
+    array_name[63] = '\0';
+    strncpy(index_expr, index, 63);
+    index_expr[63] = '\0';
+    return 1;
 }
 
 char *trim(char *s)
@@ -471,7 +528,7 @@ void process_line(char *raw_line)
     /* ================================================================== */
     if (strncmp(trimmed, "if ", 3) == 0)
     {
-        char a[64], op[16], b[64], label[64], dummy[8];
+        char a[64], op[16], b[64], label[64];
 
         if (sscanf(trimmed, "if %63s %15s %63s goto %63s", a, op, b, label) == 4)
         {
@@ -837,29 +894,47 @@ void process_line(char *raw_line)
     }
 
     /* ================================================================== */
-    /* <dest> = str "literal"                                              */
+    /* alloc_array <name>, <size>, <type>                                  */
+    /* ================================================================== */
+    if (strncmp(trimmed, "alloc_array ", 12) == 0)
+    {
+        char name[64];
+        int size;
+        char type[16];
+        if (sscanf(trimmed + 12, "%63[^,], %d, %15s", name, &size, type) == 3)
+        {
+            int slot_size = 8;
+            if (strcmp(type, "char") == 0)
+                slot_size = 1;
+            else if (strcmp(type, "string") == 0)
+                slot_size = STRING_BUF_SIZE;
+            else if (strcmp(type, "float") == 0)
+                slot_size = 8;
+            else if (strcmp(type, "int") == 0)
+                slot_size = 8;
+
+            int total_bytes = size * slot_size;
+            get_offset_typed(name, type);
+            var_map[var_count - 1].size = total_bytes;
+            frame_size += total_bytes - slot_size;
+            var_map[var_count - 1].offset = -frame_size;
+            return;
+        }
+    }
+
+    /* ================================================================== */
+    /* <dest> = str "..."                                                  */
     /* ================================================================== */
     {
-        char dest[64], content[512];
-        const char *quote1 = strstr(trimmed, "str \"");
-        if (quote1 && sscanf(trimmed, "%63s = str", dest) == 1)
+        char dest[64];
+        char content[256];
+        if (sscanf(trimmed, "%63s = str \"%255[^\"]\"", dest, content) == 2)
         {
-            quote1 += 5;
-            const char *quote2 = strrchr(quote1, '"');
-            if (quote2 && quote2 >= quote1)
-            {
-                size_t len = (size_t)(quote2 - quote1);
-                if (len >= sizeof(content))
-                    len = sizeof(content) - 1;
-                strncpy(content, quote1, len);
-                content[len] = '\0';
-
-                const char *label = register_string_literal(content);
-                int off_dest = get_offset_typed(dest, "string");
-                set_var_type(dest, "string");
-                emit_store_string_literal(off_dest, label);
-                return;
-            }
+            const char *label = register_string_literal(content);
+            int off_dest = get_offset_typed(dest, "string");
+            set_var_type(dest, "string");
+            emit_store_string_literal(off_dest, label);
+            return;
         }
     }
 
@@ -1106,11 +1181,186 @@ void process_line(char *raw_line)
     }
 
     /* ================================================================== */
+    /* <dest> = <array>[<index>]                                          */
+    /* ================================================================== */
+    {
+        char dest[64];
+        char rhs[128];
+        if (sscanf(trimmed, "%63[^=]=%127[^\n]", dest, rhs) == 2 || sscanf(trimmed, "%63[^=] = %127[^\n]", dest, rhs) == 2)
+        {
+            char *dtrim = trim(dest);
+            char *rtrim = trim(rhs);
+            char array_name[64];
+            char index_expr[64];
+            if (parse_array_access(rtrim, array_name, index_expr))
+            {
+                const char *arr_type = get_var_type(array_name);
+                int off_arr = get_offset(array_name);
+                int elem_size = array_slot_size_for_type(arr_type);
+                int off_dest = get_offset_typed(dtrim, arr_type);
+                set_var_type(dtrim, arr_type);
+
+                if (is_int_literal(index_expr))
+                {
+                    int idx_val = atoi(index_expr);
+                    int elem_off = off_arr + idx_val * elem_size;
+                    if (strcmp(arr_type, "string") == 0)
+                    {
+                        fprintf(asm_out, "    leaq %d(%%rbp), %%rsi\n", elem_off);
+                        fprintf(asm_out, "    leaq %d(%%rbp), %%rdi\n", off_dest);
+                        fprintf(asm_out, "    call strcpy\n");
+                    }
+                    else if (strcmp(arr_type, "float") == 0)
+                    {
+                        fprintf(asm_out, "    movss %d(%%rbp), %%xmm0\n", elem_off);
+                        fprintf(asm_out, "    movss %%xmm0, %d(%%rbp)\n", off_dest);
+                    }
+                    else if (strcmp(arr_type, "char") == 0)
+                    {
+                        fprintf(asm_out, "    movzbq %d(%%rbp), %%rax\n", elem_off);
+                        fprintf(asm_out, "    movq %%rax, %d(%%rbp)\n", off_dest);
+                    }
+                    else
+                    {
+                        fprintf(asm_out, "    movq %d(%%rbp), %%rax\n", elem_off);
+                        fprintf(asm_out, "    movq %%rax, %d(%%rbp)\n", off_dest);
+                    }
+                    return;
+                }
+
+                int off_index = materialize_int(index_expr);
+                fprintf(asm_out, "    movq %d(%%rbp), %%rax\n", off_index);
+                if (elem_size != 1)
+                    fprintf(asm_out, "    imulq $%d, %%rax\n", elem_size);
+                fprintf(asm_out, "    leaq %d(%%rbp), %%rdx\n", off_arr);
+                fprintf(asm_out, "    addq %%rax, %%rdx\n");
+
+                if (strcmp(arr_type, "string") == 0)
+                {
+                    fprintf(asm_out, "    leaq %d(%%rbp), %%rdi\n", off_dest);
+                    fprintf(asm_out, "    movq %%rdx, %%rsi\n");
+                    fprintf(asm_out, "    call strcpy\n");
+                }
+                else if (strcmp(arr_type, "float") == 0)
+                {
+                    fprintf(asm_out, "    movss (%%rdx), %%xmm0\n");
+                    fprintf(asm_out, "    movss %%xmm0, %d(%%rbp)\n", off_dest);
+                }
+                else if (strcmp(arr_type, "char") == 0)
+                {
+                    fprintf(asm_out, "    movzbq (%%rdx), %%rax\n");
+                    fprintf(asm_out, "    movq %%rax, %d(%%rbp)\n", off_dest);
+                }
+                else
+                {
+                    fprintf(asm_out, "    movq (%%rdx), %%rax\n");
+                    fprintf(asm_out, "    movq %%rax, %d(%%rbp)\n", off_dest);
+                }
+                return;
+            }
+        }
+    }
+
+    /* ================================================================== */
+    /* <array>[<index>] = <src>                                           */
+    /* ================================================================== */
+    {
+        char lhs[128];
+        char rhs[64];
+        if (sscanf(trimmed, "%127[^=] = %63s", lhs, rhs) == 2)
+        {
+            char *ltrim = trim(lhs);
+            char *rtrim = trim(rhs);
+            char array_name[64];
+            char index_expr[64];
+            if (parse_array_access(ltrim, array_name, index_expr))
+            {
+                const char *arr_type = get_var_type(array_name);
+                int off_arr = get_offset(array_name);
+                int elem_size = array_slot_size_for_type(arr_type);
+
+                if (is_int_literal(index_expr))
+                {
+                    int idx_val = atoi(index_expr);
+                    int elem_off = off_arr + idx_val * elem_size;
+                    if (strcmp(arr_type, "string") == 0)
+                    {
+                        int off_src = get_offset_typed(rtrim, "string");
+                        set_var_type(rtrim, "string");
+                        fprintf(asm_out, "    leaq %d(%%rbp), %%rdi\n", elem_off);
+                        fprintf(asm_out, "    leaq %d(%%rbp), %%rsi\n", off_src);
+                        fprintf(asm_out, "    call strcpy\n");
+                    }
+                    else if (strcmp(arr_type, "float") == 0)
+                    {
+                        int off_src = materialize_float(rtrim);
+                        fprintf(asm_out, "    movss %d(%%rbp), %%xmm0\n", off_src);
+                        fprintf(asm_out, "    movss %%xmm0, %d(%%rbp)\n", elem_off);
+                    }
+                    else if (strcmp(arr_type, "char") == 0)
+                    {
+                        int off_src = materialize_int(rtrim);
+                        fprintf(asm_out, "    movq %d(%%rbp), %%rax\n", off_src);
+                        fprintf(asm_out, "    movb %%al, %d(%%rbp)\n", elem_off);
+                    }
+                    else
+                    {
+                        int off_src = materialize_int(rtrim);
+                        fprintf(asm_out, "    movq %d(%%rbp), %%rax\n", off_src);
+                        fprintf(asm_out, "    movq %%rax, %d(%%rbp)\n", elem_off);
+                    }
+                    return;
+                }
+
+                int off_index = materialize_int(index_expr);
+                fprintf(asm_out, "    movq %d(%%rbp), %%rax\n", off_index);
+                if (elem_size != 1)
+                    fprintf(asm_out, "    imulq $%d, %%rax\n", elem_size);
+                fprintf(asm_out, "    leaq %d(%%rbp), %%rdx\n", off_arr);
+                fprintf(asm_out, "    addq %%rax, %%rdx\n");
+
+                if (strcmp(arr_type, "string") == 0)
+                {
+                    int off_src = get_offset_typed(rtrim, "string");
+                    set_var_type(rtrim, "string");
+                    fprintf(asm_out, "    movq %%rdx, %%rdi\n");
+                    fprintf(asm_out, "    leaq %d(%%rbp), %%rsi\n", off_src);
+                    fprintf(asm_out, "    call strcpy\n");
+                }
+                else if (strcmp(arr_type, "float") == 0)
+                {
+                    int off_src = materialize_float(rtrim);
+                    fprintf(asm_out, "    movss %d(%%rbp), %%xmm0\n", off_src);
+                    fprintf(asm_out, "    movss %%xmm0, (%%rdx)\n");
+                }
+                else if (strcmp(arr_type, "char") == 0)
+                {
+                    int off_src = materialize_int(rtrim);
+                    fprintf(asm_out, "    movq %d(%%rbp), %%rax\n", off_src);
+                    fprintf(asm_out, "    movb %%al, (%%rdx)\n");
+                }
+                else
+                {
+                    int off_src = materialize_int(rtrim);
+                    fprintf(asm_out, "    movq %d(%%rbp), %%rax\n", off_src);
+                    fprintf(asm_out, "    movq %%rax, (%%rdx)\n");
+                }
+                return;
+            }
+        }
+    }
+
+    /* ================================================================== */
     /* <dest> = <valor>  (atribuição simples: cópia ou literal)            */
     /* ================================================================== */
     {
-        char dest[64], val[64];
-        if (sscanf(trimmed, "%63s = %63s", dest, val) == 2)
+        char dest[64], val[64], extra[128];
+        /* Use a stricter sscanf pattern to ensure we only match simple "A = B"
+           and not array writes, function calls or concat/ops. The format with
+           a third capture allows us to detect extra tokens: result==2 means
+           exactly two tokens were found. */
+        int sc = sscanf(trimmed, "%63s = %63s %127s", dest, val, extra);
+        if (sc == 2 && !strchr(trimmed, '[') && !strstr(trimmed, "call") && !strstr(trimmed, "str "))
         {
             int off_dest = get_offset(dest);
 

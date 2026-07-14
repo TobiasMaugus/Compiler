@@ -30,7 +30,7 @@ FILE *out = NULL;
 /* ========================================================================= */
 
 typedef enum {
-    AST_VAR_DECL, AST_FUNC_DECL, AST_TYPE,
+    AST_VAR_DECL, AST_ARRAY_DECL, AST_ARRAY_ACCESS, AST_ARRAY_INIT, AST_FUNC_DECL, AST_TYPE,
     AST_PARAM, AST_COMPOUND, AST_IF, AST_WHILE, AST_PRINT, AST_READ,
     AST_RETURN, AST_ASSIGN, AST_BINOP, AST_UNOP, AST_ID, AST_INT, AST_FLOAT,
     AST_CHAR, AST_STRING,
@@ -46,7 +46,9 @@ typedef struct ASTNode {
     int line;    
     int column;
     char exp_type[20]; 
-    char temp[20];     
+    char temp[20];    
+    int num_array_dims;
+    int array_dims[10];
     
     struct ASTNode *child1;
     struct ASTNode *child2;
@@ -78,6 +80,8 @@ ASTNode* create_node(ASTNodeType type, ASTNode *c1, ASTNode *c2, ASTNode *c3, AS
     n->child3 = c3;
     n->child4 = c4;
     n->next = NULL;
+    n->num_array_dims = 0;
+    for (int i = 0; i < 10; i++) n->array_dims[i] = 0;
     return n;
 }
 
@@ -185,9 +189,9 @@ void emit_tac(const char *fmt, ...) {
 %token PLUS MINUS MULT DIV MOD
 %token ASSIG
 %token SEMCOL COMMA
-%token LPAREN RPAREN LBRACE RBRACE
+%token LPAREN RPAREN LBRACE RBRACE LBRACKET RBRACKET
 
-%type <node> program declaration_list declaration variable_declaration type_specifier function_declaration function_body statements statement expression_stmt expression selection_stmt iteration_stmt io_stmt return_stmt statement_list compound_stmt parameters parameter_list parameter variable_list variable function_call arguments argument_list
+%type <node> program declaration_list declaration variable_declaration type_specifier function_declaration function_body statements statement expression_stmt expression selection_stmt iteration_stmt io_stmt return_stmt statement_list compound_stmt parameters parameter_list parameter variable_list variable decl_dimensions access_dimensions expression_list initializer_list initializer_items array_access function_call arguments argument_list
 
 /* ---------------- PRECEDÊNCIA ---------------- */
 
@@ -252,10 +256,89 @@ variable_list
 
 variable
     : ID { $$ = create_leaf_id($1, @1.first_line, @1.first_column); }
+    | ID decl_dimensions ASSIG expression
+      {
+          ASTNode *id_node = create_leaf_id($1, @1.first_line, @1.first_column);
+          $$ = create_node(AST_ARRAY_DECL, id_node, $2, $4, NULL);
+      }
+    | ID decl_dimensions ASSIG initializer_list
+      {
+          ASTNode *id_node = create_leaf_id($1, @1.first_line, @1.first_column);
+          $$ = create_node(AST_ARRAY_DECL, id_node, $2, $4, NULL);
+      }
+    | ID decl_dimensions
+      {
+          ASTNode *id_node = create_leaf_id($1, @1.first_line, @1.first_column);
+          $$ = create_node(AST_ARRAY_DECL, id_node, $2, NULL, NULL);
+      }
     | ID ASSIG expression
       {
           ASTNode *id_node = create_leaf_id($1, @1.first_line, @1.first_column);
           $$ = create_node(AST_ASSIGN, id_node, $3, NULL, NULL);
+      }
+    ;
+
+decl_dimensions
+    : decl_dimensions LBRACKET INTNUM RBRACKET
+      {
+          ASTNode *t = $1;
+          while (t->next != NULL) t = t->next;
+          t->next = create_leaf_int($3, @3.first_line, @3.first_column);
+          $$ = $1;
+      }
+    | LBRACKET INTNUM RBRACKET
+      { $$ = create_leaf_int($2, @2.first_line, @2.first_column); }
+    ;
+
+access_dimensions
+    : access_dimensions LBRACKET expression RBRACKET
+      {
+          ASTNode *t = $1;
+          while (t->next != NULL) t = t->next;
+          t->next = $3;
+          $$ = $1;
+      }
+    | LBRACKET expression RBRACKET
+      { $$ = $2; }
+    ;
+
+expression_list
+    : expression_list COMMA expression
+      {
+          ASTNode *t = $1;
+          while (t->next != NULL) t = t->next;
+          t->next = $3;
+          $$ = $1;
+      }
+    | expression { $$ = $1; }
+    ;
+
+initializer_list
+    : LBRACE expression_list RBRACE { $$ = create_node(AST_ARRAY_INIT, $2, NULL, NULL, NULL); }
+    | LBRACE initializer_items RBRACE { $$ = create_node(AST_ARRAY_INIT, $2, NULL, NULL, NULL); }
+    | LBRACE initializer_list RBRACE { $$ = create_node(AST_ARRAY_INIT, $2, NULL, NULL, NULL); }
+    ;
+
+initializer_items
+    : initializer_items COMMA initializer_list
+      {
+          ASTNode *t = $1;
+          while (t->next != NULL) t = t->next;
+          t->next = $3;
+          $$ = $1;
+      }
+    | initializer_list COMMA initializer_list
+      {
+          $1->next = $3;
+          $$ = $1;
+      }
+    ;
+
+array_access
+    : ID access_dimensions
+      {
+          ASTNode *id_node = create_leaf_id($1, @1.first_line, @1.first_column);
+          $$ = create_node(AST_ARRAY_ACCESS, id_node, $2, NULL, NULL);
       }
     ;
 
@@ -366,6 +449,7 @@ io_stmt
 
 expression
     : ID ASSIG expression { ASTNode *id_node = create_leaf_id($1, @1.first_line, @1.first_column); $$ = create_node(AST_ASSIGN, id_node, $3, NULL, NULL); }
+    | array_access ASSIG expression { $$ = create_node(AST_ASSIGN, $1, $3, NULL, NULL); }
     | expression PLUS expression { $$ = create_node(AST_BINOP, $1, $3, NULL, NULL); $$->lexema = strdup("+"); }
     | expression MINUS expression { $$ = create_node(AST_BINOP, $1, $3, NULL, NULL); $$->lexema = strdup("-"); }
     | expression MULT expression { $$ = create_node(AST_BINOP, $1, $3, NULL, NULL); $$->lexema = strdup("*"); }
@@ -382,6 +466,7 @@ expression
     | NOT expression { $$ = create_node(AST_UNOP, $2, NULL, NULL, NULL); $$->lexema = strdup("!"); $$->line = @1.first_line; $$->column = @1.first_column;}
     | MINUS expression %prec UMINUS { $$ = create_node(AST_UNOP, $2, NULL, NULL, NULL); $$->lexema = strdup("minus"); $$->line = @1.first_line; $$->column = @1.first_column;}
     | LPAREN expression RPAREN { $$ = $2; }
+    | array_access { $$ = $1; }
     | ID { $$ = create_leaf_id($1, @1.first_line, @1.first_column); }
     | INTNUM { $$ = create_leaf_int($1, @1.first_line, @1.first_column); }
     | FLOATNUM { $$ = create_leaf_float($1, @1.first_line, @1.first_column); }
@@ -450,6 +535,9 @@ typedef struct Symbol {
     int declaration_column;
     int num_params;
     char param_types[10][20];
+    int num_array_dims;
+    int array_dims[10];
+    int array_total_size;
     struct Symbol *next;
 } Symbol;
 
@@ -566,6 +654,10 @@ int add_symbol(const char *name, const char *type, const char *category, int lin
     ns->declaration_column = column;
     ns->num_params = 0;
     
+    ns->num_params = 0;
+    ns->num_array_dims = 0;
+    ns->array_total_size = 0;
+    for (int i = 0; i < 10; i++) ns->array_dims[i] = 0;
     ns->next = current_table->symbols;
     current_table->symbols = ns;
     
@@ -683,6 +775,44 @@ int contains_return(ASTNode *node) {
     return 0;
 }
 
+/* Coleta recursiva de folhas (sem modificar next) */
+#define MAX_INIT_ITEMS 1024
+static ASTNode *init_items_buf[MAX_INIT_ITEMS];
+static int init_items_count;
+
+void collect_init_leaves(ASTNode *node) {
+    if (!node) return;
+    if (node->type == AST_ARRAY_INIT) {
+        /* Descer recursivamente nos filhos do ARRAY_INIT */
+        collect_init_leaves(node->child1);
+        /* Processar irmãos (next) do nó ARRAY_INIT */
+        collect_init_leaves(node->next);
+    } else {
+        /* É uma folha (expressão): adicionar ao buffer */
+        if (init_items_count < MAX_INIT_ITEMS) {
+            init_items_buf[init_items_count++] = node;
+        }
+        /* Processar irmãos da folha */
+        collect_init_leaves(node->next);
+    }
+}
+
+void collect_array_initializers(ASTNode *node, ASTNode **first, ASTNode **last) {
+    init_items_count = 0;
+    collect_init_leaves(node);
+    *first = NULL;
+    *last = NULL;
+    for (int i = 0; i < init_items_count; i++) {
+        init_items_buf[i]->next = NULL; /* limpa para segurança */
+        if (*last) {
+            (*last)->next = init_items_buf[i];
+            *last = init_items_buf[i];
+        } else {
+            *first = *last = init_items_buf[i];
+        }
+    }
+}
+
 /* Similar to contains_return but requires returns to have a value (child1 != NULL).
    Used to validate non-void functions have return with expressions on all paths. */
 /* Returns 1 if all control-flow paths through 'node' lead to a RETURN with a value. */
@@ -732,6 +862,49 @@ char* verificar_semantica(ASTNode *node) {
                     char *rtype = verificar_semantica(var->child2);
                     check_assignment_types(decl_type, rtype, vname,
                                            var->child1->line, var->child1->column);
+                } else if (var->type == AST_ARRAY_DECL) {
+                    char *vname = var->child1->lexema;
+                    if (!add_symbol(vname, decl_type, "array", var->child1->line, var->child1->column)) {
+                        fprintf(stderr, "[SEMANTIC ERROR] Array '%s' redeclared in same scope at Line %d, Column %d.\n", vname, var->child1->line, var->child1->column);
+                        semantic_error = 1;
+                    }
+                    Symbol *s = lookup_symbol(vname);
+                    if (s) {
+                        ASTNode *dims = var->child2;
+                        int total_size = 1;
+                        int idx = 0;
+                        while (dims && idx < 10) {
+                            if (dims->type == AST_INT) {
+                                s->array_dims[idx++] = dims->int_val;
+                                total_size *= dims->int_val;
+                            }
+                            dims = dims->next;
+                        }
+                        s->num_array_dims = idx;
+                        s->array_total_size = total_size;
+                    }
+                    if (var->child3) {
+                        ASTNode *init = var->child3;
+                        ASTNode *flat_init = NULL;
+                        ASTNode *last_item = NULL;
+                        collect_array_initializers(init, &flat_init, &last_item);
+                        ASTNode *item = flat_init;
+                        int index = 0;
+                        int total_size = lookup_symbol(vname)->array_total_size;
+                        while (item) {
+                            if (index >= total_size) {
+                                fprintf(stderr, "[SEMANTIC ERROR] Too many initializers for array '%s' at Line %d, Column %d.\n", vname, var->child1->line, var->child1->column);
+                                semantic_error = 1;
+                                break;
+                            }
+                            char *rtype = verificar_semantica(item);
+                            if (!check_assignment_types(decl_type, rtype, vname, item->line, item->column)) {
+                                fprintf(stderr, "               In initializer of array '%s'.\n", vname);
+                            }
+                            index++;
+                            item = item->next;
+                        }
+                    }
                 }
                 var = var->next;
             }
@@ -823,9 +996,10 @@ char* verificar_semantica(ASTNode *node) {
         case AST_ID: {
             Symbol *s = lookup_symbol(node->lexema);
             if (!s) {
-                fprintf(stderr, "[SEMANTIC ERROR] Variable '%s' used before declaration at Line %d, Column %d.\n", node->lexema, node->line, node->column);
+                fprintf(stderr, "[SEMANTIC ERROR] Variable '%s' used before declaration at Line %d, Column %d.\n",
+                        node->lexema, node->line, node->column);
                 semantic_error = 1;
-                strcpy(node->exp_type, "int"); 
+                strcpy(node->exp_type, "int");
                 return "int";
             }
             strcpy(node->exp_type, s->type);
@@ -845,6 +1019,119 @@ char* verificar_semantica(ASTNode *node) {
             
             strcpy(node->exp_type, ltype);
             return ltype;
+        }
+        case AST_ARRAY_DECL: {
+            char *decl_type = node->child1->lexema;
+            ASTNode *dims = node->child2;
+            int total_size = 1;
+            ASTNode *d = dims;
+
+            while (d) {
+                if (d->type != AST_INT) {
+                    fprintf(stderr, "[SEMANTIC ERROR] Array dimensions must be integer constants at Line %d, Column %d.\n", d->line, d->column);
+                    semantic_error = 1;
+                    break;
+                }
+                if (d->int_val <= 0) {
+                    fprintf(stderr, "[SEMANTIC ERROR] Array dimensions must be positive constants at Line %d, Column %d.\n", d->line, d->column);
+                    semantic_error = 1;
+                }
+                total_size *= d->int_val;
+                d = d->next;
+            }
+
+            if (!add_symbol(node->child1->lexema, decl_type, "array", node->child1->line, node->child1->column)) {
+                fprintf(stderr, "[SEMANTIC ERROR] Array '%s' redeclared in same scope at Line %d, Column %d.\n", node->child1->lexema, node->child1->line, node->child1->column);
+                semantic_error = 1;
+            }
+
+            Symbol *s = lookup_symbol(node->child1->lexema);
+            if (s) {
+                s->num_array_dims = 0;
+                s->array_total_size = total_size;
+                ASTNode *dim = dims;
+                int idx = 0;
+                while (dim && idx < 10) {
+                    s->array_dims[idx++] = dim->int_val;
+                    dim = dim->next;
+                }
+                s->num_array_dims = idx;
+            }
+
+            if (node->child3) {
+                ASTNode *init = node->child3;
+                ASTNode *flat_init = NULL;
+                ASTNode *last_item = NULL;
+                collect_array_initializers(init, &flat_init, &last_item);
+                ASTNode *item = flat_init;
+                int index = 0;
+                while (item) {
+                    if (index >= total_size) {
+                        fprintf(stderr, "[SEMANTIC ERROR] Too many initializers for array '%s' at Line %d, Column %d.\n", node->child1->lexema, node->child1->line, node->child1->column);
+                        semantic_error = 1;
+                        break;
+                    }
+                    char *rtype = verificar_semantica(item);
+                    if (!check_assignment_types(decl_type, rtype, node->child1->lexema, item->line, item->column)) {
+                        fprintf(stderr, "               In initializer of array '%s'.\n", node->child1->lexema);
+                    }
+                    index++;
+                    item = item->next;
+                }
+                if (index < total_size) {
+                    /* sem problema, faltam inicializadores; inicialização parcial é permitida */
+                }
+            }
+            return "void";
+        }
+        case AST_ARRAY_ACCESS: {
+            Symbol *s = lookup_symbol(node->child1->lexema);
+            if (!s) {
+                fprintf(stderr, "[SEMANTIC ERROR] Array '%s' used before declaration at Line %d, Column %d.\n", node->child1->lexema, node->child1->line, node->child1->column);
+                semantic_error = 1;
+                strcpy(node->exp_type, "int");
+                return "int";
+            }
+            if (strcmp(s->category, "array") != 0) {
+                fprintf(stderr, "[SEMANTIC ERROR] '%s' is not an array at Line %d, Column %d.\n", node->child1->lexema, node->child1->line, node->child1->column);
+                semantic_error = 1;
+            }
+
+            int dims = 0;
+            ASTNode *idx = node->child2;
+            while (idx) {
+                char *t = verificar_semantica(idx);
+                if (strcmp(t, "int") != 0) {
+                    fprintf(stderr, "[SEMANTIC ERROR] Array index must be int at Line %d, Column %d.\n", idx->line, idx->column);
+                    semantic_error = 1;
+                }
+                /* Bounds check: se o índice é constante inteira, verifica limites */
+                if (s && dims < s->num_array_dims && idx->type == AST_INT) {
+                    int idx_val = idx->int_val;
+                    int dim_size = s->array_dims[dims];
+                    if (idx_val < 0 || idx_val >= dim_size) {
+                        fprintf(stderr, "[SEMANTIC ERROR] Array index out of range: '%s' dimension %d has size %d, but index is %d at Line %d, Column %d.\n",
+                                node->child1->lexema, dims + 1, dim_size, idx_val, idx->line, idx->column);
+                        semantic_error = 1;
+                    }
+                }
+                dims++;
+                idx = idx->next;
+            }
+            if (s && s->num_array_dims != dims) {
+                fprintf(stderr, "[SEMANTIC ERROR] Array '%s' expects %d indices, got %d at Line %d, Column %d.\n",
+                        node->child1->lexema, s->num_array_dims, dims, node->child1->line, node->child1->column);
+                semantic_error = 1;
+            }
+            /* Propagar dimensões do símbolo para o nó da AST, pois a tabela de
+               símbolos não estará acessível durante a geração de TAC (escopo fechado). */
+            if (s) {
+                node->num_array_dims = s->num_array_dims;
+                for (int i = 0; i < s->num_array_dims; i++)
+                    node->array_dims[i] = s->array_dims[i];
+            }
+            strcpy(node->exp_type, s->type);
+            return node->exp_type;
         }
         case AST_BINOP: {
             char *t1 = verificar_semantica(node->child1);
@@ -1147,7 +1434,45 @@ void gerar_tac(ASTNode *node) {
             char *decl_type = node->child1->lexema;
             ASTNode *var = node->child2;
             while (var) {
-                if (var->type == AST_ASSIGN) {
+                if (var->type == AST_ARRAY_DECL) {
+                    ASTNode *dims = var->child2;
+                    int total_size = 1;
+                    ASTNode *d = dims;
+                    while (d) {
+                        total_size *= d->int_val;
+                        d = d->next;
+                    }
+                    emit_tac("alloc_array %s, %d, %s", var->child1->lexema, total_size, decl_type);
+
+                    if (var->child3) {
+                        ASTNode *init = var->child3;
+                        ASTNode *flat_init = NULL;
+                        ASTNode *last_item = NULL;
+                        collect_array_initializers(init, &flat_init, &last_item);
+                        ASTNode *item = flat_init;
+                        int index = 0;
+                        while (item) {
+                            if (index >= total_size) break;
+                            gerar_tac(item);
+                            emit_tac("%s[%d] = %s", var->child1->lexema, index, item->temp);
+                            index++;
+                            item = item->next;
+                        }
+                    } else {
+                        for (int i = 0; i < total_size; i++) {
+                            if (strcmp(decl_type, "float") == 0) {
+                                emit_tac("%s[%d] = 0.0", var->child1->lexema, i);
+                            } else if (strcmp(decl_type, "char") == 0) {
+                                emit_tac("%s[%d] = 0", var->child1->lexema, i);
+                            } else if (strcmp(decl_type, "string") == 0) {
+                                emit_tac("%s[%d] = str \"\"", var->child1->lexema, i);
+                            } else {
+                                emit_tac("%s[%d] = 0", var->child1->lexema, i);
+                            }
+                        }
+                    }
+                }
+                else if (var->type == AST_ASSIGN) {
                     gerar_tac(var->child2);
                     char rhs_temp[64];
                     strcpy(rhs_temp, var->child2->temp);
@@ -1163,6 +1488,17 @@ void gerar_tac(ASTNode *node) {
                     }
 
                     emit_tac("%s = %s", var->child1->lexema, rhs_temp);
+                } else {
+                    const char *name = var->lexema;
+                    if (strcmp(decl_type, "float") == 0) {
+                        emit_tac("%s = 0.0", name);
+                    } else if (strcmp(decl_type, "char") == 0) {
+                        emit_tac("%s = 0", name);
+                    } else if (strcmp(decl_type, "string") == 0) {
+                        emit_tac("%s = str \"\"", name);
+                    } else {
+                        emit_tac("%s = 0", name);
+                    }
                 }
                 var = var->next;
             }
@@ -1221,11 +1557,126 @@ void gerar_tac(ASTNode *node) {
         case AST_ID:
             strcpy(node->temp, node->lexema);
             break;
-        case AST_ASSIGN: {
+        case AST_ARRAY_ACCESS: {
+            Symbol *s = lookup_symbol(node->child1->lexema);
+            const char *arr_type = node->exp_type;
+            int multipliers[10] = {0};
+            int dim_count = node->num_array_dims;
+
+            if (s) {
+                arr_type = s->type;
+                if (dim_count == 0) {
+                    dim_count = s->num_array_dims;
+                    node->num_array_dims = dim_count;
+                    for (int i = 0; i < dim_count; i++) {
+                        node->array_dims[i] = s->array_dims[i];
+                    }
+                }
+            }
+
+            if (dim_count == 0) {
+                ASTNode *tmp = node->child2;
+                while (tmp) {
+                    dim_count++;
+                    tmp = tmp->next;
+                }
+                node->num_array_dims = dim_count;
+            }
+
+            for (int i = 0; i < dim_count; i++) {
+                multipliers[i] = 1;
+                for (int j = i + 1; j < dim_count; j++) {
+                    multipliers[i] *= node->array_dims[j];
+                }
+            }
+
+
+
+            ASTNode *index_expr = node->child2;
+            char accumulated[64] = "";
+            int idx = 0;
+
+            while (index_expr && idx < dim_count) {
+                gerar_tac(index_expr);
+                char temp[64];
+                if (multipliers[idx] != 1) {
+                    sprintf(temp, "%s_mul_%d", index_expr->temp, idx);
+                    emit_tac("%s = %s * %d", temp, index_expr->temp, multipliers[idx]);
+                } else {
+                    strcpy(temp, index_expr->temp);
+                }
+                if (idx == 0) {
+                    strcpy(accumulated, temp);
+                } else {
+                    char new_acc[64];
+                    sprintf(new_acc, "acc_%d", idx);
+                    emit_tac("%s = %s + %s", new_acc, accumulated, temp);
+                    strcpy(accumulated, new_acc);
+                }
+                index_expr = index_expr->next;
+                idx++;
+            }
+
+            char *result = new_temp();
+            emit_tac("%s = %s[%s]", result, node->child1->lexema, accumulated);
+            strcpy(node->temp, result);
+            break;
+        }
+       case AST_ASSIGN: {
             char rhs_temp[64];
             emit_assignment_rhs(node->child1, node->child2, rhs_temp);
-            emit_tac("%s = %s", node->child1->lexema, rhs_temp);
-            strcpy(node->temp, node->child1->lexema);
+            
+            if (node->child1->type == AST_ARRAY_ACCESS) {
+                ASTNode *arr = node->child1;
+                int dim_count = arr->num_array_dims;
+
+                /* Fallback: contar dimensões pelos nós de índice */
+                if (dim_count == 0) {
+                    ASTNode *tmp = arr->child2;
+                    while (tmp) { dim_count++; tmp = tmp->next; }
+                }
+
+                /* Calcular multiplicadores para flattening */
+                int multipliers[10] = {0};
+                for (int i = 0; i < dim_count; i++) {
+                    multipliers[i] = 1;
+                    for (int j = i + 1; j < dim_count; j++) {
+                        multipliers[i] *= arr->array_dims[j];
+                    }
+                }
+
+                /* Gerar TAC com flattening completo */
+                ASTNode *index_expr = arr->child2;
+                char accumulated[64] = "";
+                int idx = 0;
+
+                while (index_expr && idx < dim_count) {
+                    gerar_tac(index_expr);
+                    char temp[64];
+                    if (multipliers[idx] != 1) {
+                        sprintf(temp, "%s_mul_%d", index_expr->temp, idx);
+                        emit_tac("%s = %s * %d", temp, index_expr->temp, multipliers[idx]);
+                    } else {
+                        strcpy(temp, index_expr->temp);
+                    }
+                    if (idx == 0) {
+                        strcpy(accumulated, temp);
+                    } else {
+                        char new_acc[64];
+                        sprintf(new_acc, "acc_w_%d", idx);
+                        emit_tac("%s = %s + %s", new_acc, accumulated, temp);
+                        strcpy(accumulated, new_acc);
+                    }
+                    index_expr = index_expr->next;
+                    idx++;
+                }
+
+                emit_tac("%s[%s] = %s", arr->child1->lexema, accumulated, rhs_temp);
+                strcpy(node->temp, rhs_temp);
+            } else {
+                emit_tac("%s = %s", node->child1->lexema, rhs_temp);
+                strcpy(node->temp, node->child1->lexema);
+            }
             break;
         }
             
@@ -1615,6 +2066,8 @@ int main(int argc, char *argv[]) {
     printf("\n========================================\n");
     printf("4. OPTIMIZING TAC (Constant Folding + Algebraic Simplification)\n");
     printf("========================================\n");
+
+
 
     optimize_tac();
 

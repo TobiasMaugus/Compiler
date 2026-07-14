@@ -7,138 +7,153 @@
 .str_read_float: .string "%f"
 .str_read_char: .string " %c"
 .str_read_string: .string "%255s"
-.str_lit_0: .string "Is prime"
-.str_lit_1: .string "Is not prime"
+.str_lit_0: .string "a"
+.str_lit_1: .string "b"
+.str_lit_2: .string "c"
+.str_lit_3: .string "d"
+.str_lit_4: .string "e"
+.str_lit_5: .string "f"
+.str_lit_6: .string "--- Teste Matriz 2D INT ---"
+.str_lit_7: .string "Elemento [1][2] (esperado 6):"
+.str_lit_8: .string "ola"
+.str_lit_9: .string "Elemento [0][1] modificado (esperado 42):"
 .text
 
-.global printIsPrime
-printIsPrime:
-    pushq %rbp
-    movq %rsp, %rbp
-    subq $8192, %rsp
-    movq %rdi, -8(%rbp)
-    movq $0, %rax
-    movq %rax, -16(%rbp)
-    movq -8(%rbp), %rax
-    cmpq -16(%rbp), %rax
-    jne L1
-    jmp L2
-L1:
-    leaq -272(%rbp), %rdi
-    leaq .str_lit_0(%rip), %rsi
-    call strcpy
-    leaq -272(%rbp), %rsi
-    leaq .str_print_string(%rip), %rdi
-    movb $0, %al
-    call printf
-    jmp L3
-L2:
-    leaq -528(%rbp), %rdi
-    leaq .str_lit_1(%rip), %rsi
-    call strcpy
-    leaq -528(%rbp), %rsi
-    leaq .str_print_string(%rip), %rdi
-    movb $0, %al
-    call printf
-L3:
-    leave
-    ret
-.global isPrime
-isPrime:
-    pushq %rbp
-    movq %rsp, %rbp
-    subq $8192, %rsp
-    movq %rdi, -8(%rbp)
-    movq $2, %rax
-    movq %rax, -16(%rbp)
-    movq $2, %rax
-    movq %rax, -24(%rbp)
-    movq -8(%rbp), %rax
-    cmpq -24(%rbp), %rax
-    jl L4
-    jmp L5
-L4:
-    movq $0, %rax
-    leave
-    ret
-L5:
-L6:
-    movq -16(%rbp), %rax
-    cmpq -8(%rbp), %rax
-    jl L7
-    jmp L8
-L7:
-    movq -8(%rbp), %rax
-    cqto
-    idivq -16(%rbp)
-    movq %rdx, %rax
-    movq %rax, -32(%rbp)
-    movq $0, %rax
-    movq %rax, -40(%rbp)
-    movq -32(%rbp), %rax
-    cmpq -40(%rbp), %rax
-    je L9
-    jmp L10
-L9:
-    movq $0, %rax
-    leave
-    ret
-L10:
-    movq $1, %rax
-    movq %rax, -56(%rbp)
-    movq -16(%rbp), %rax
-    addq -56(%rbp), %rax
-    movq %rax, -48(%rbp)
-    movq -48(%rbp), %rax
-    movq %rax, -16(%rbp)
-    jmp L6
-L8:
-    movq $1, %rax
-    leave
-    ret
-    leave
-    ret
 .global main
 main:
     pushq %rbp
     movq %rsp, %rbp
     subq $8192, %rsp
+    leaq -1792(%rbp), %rdi
+    leaq .str_lit_0(%rip), %rsi
+    call strcpy
+    leaq -1536(%rbp), %rdi
+    leaq -1792(%rbp), %rsi
+    call strcpy
+    leaq -2048(%rbp), %rdi
+    leaq .str_lit_1(%rip), %rsi
+    call strcpy
+    leaq -1280(%rbp), %rdi
+    leaq -2048(%rbp), %rsi
+    call strcpy
+    leaq -2304(%rbp), %rdi
+    leaq .str_lit_2(%rip), %rsi
+    call strcpy
+    leaq -1024(%rbp), %rdi
+    leaq -2304(%rbp), %rsi
+    call strcpy
+    leaq -2560(%rbp), %rdi
+    leaq .str_lit_3(%rip), %rsi
+    call strcpy
+    leaq -768(%rbp), %rdi
+    leaq -2560(%rbp), %rsi
+    call strcpy
+    leaq -2816(%rbp), %rdi
+    leaq .str_lit_4(%rip), %rsi
+    call strcpy
+    leaq -512(%rbp), %rdi
+    leaq -2816(%rbp), %rsi
+    call strcpy
+    leaq -3072(%rbp), %rdi
+    leaq .str_lit_5(%rip), %rsi
+    call strcpy
+    leaq -256(%rbp), %rdi
+    leaq -3072(%rbp), %rsi
+    call strcpy
+    leaq -3328(%rbp), %rdi
+    leaq .str_lit_6(%rip), %rsi
+    call strcpy
+    leaq -3328(%rbp), %rsi
+    leaq .str_print_string(%rip), %rdi
+    movb $0, %al
+    call printf
+    leaq -3584(%rbp), %rdi
+    leaq .str_lit_7(%rip), %rsi
+    call strcpy
+    leaq -3584(%rbp), %rsi
+    leaq .str_print_string(%rip), %rdi
+    movb $0, %al
+    call printf
+    movq $3, %rax
+    movq %rax, -3592(%rbp)
+    movq $2, %rax
+    movq %rax, -3608(%rbp)
+    movq -3592(%rbp), %rax
+    addq -3608(%rbp), %rax
+    movq %rax, -3600(%rbp)
+    movq -3600(%rbp), %rax
+    imulq $256, %rax
+    leaq -1536(%rbp), %rdx
+    addq %rax, %rdx
+    leaq -3864(%rbp), %rdi
+    movq %rdx, %rsi
+    call strcpy
+    leaq -3864(%rbp), %rsi
+    leaq .str_print_string(%rip), %rdi
+    movb $0, %al
+    call printf
+    leaq -4120(%rbp), %rdi
+    leaq .str_lit_8(%rip), %rsi
+    call strcpy
+    movq $0, %rax
+    movq %rax, -4128(%rbp)
     movq $1, %rax
-    movq %rax, -8(%rbp)
-    movq $0, %rax
-    movq %rax, -16(%rbp)
-L11:
-    movq $0, %rax
-    movq %rax, -24(%rbp)
-    movq -8(%rbp), %rax
-    cmpq -24(%rbp), %rax
-    jg L12
-    jmp L13
-L12:
-    leaq .str_read_int(%rip), %rdi
-    leaq -8(%rbp), %rsi
+    movq %rax, -4144(%rbp)
+    movq -4128(%rbp), %rax
+    addq -4144(%rbp), %rax
+    movq %rax, -4136(%rbp)
+    movq -4136(%rbp), %rax
+    imulq $256, %rax
+    leaq -1536(%rbp), %rdx
+    addq %rax, %rdx
+    movq %rdx, %rdi
+    leaq -4120(%rbp), %rsi
+    call strcpy
+    leaq -4400(%rbp), %rdi
+    leaq .str_lit_9(%rip), %rsi
+    call strcpy
+    leaq -4400(%rbp), %rsi
+    leaq .str_print_string(%rip), %rdi
     movb $0, %al
-    call scanf
+    call printf
     movq $0, %rax
-    movq %rax, -24(%rbp)
-    movq -8(%rbp), %rax
-    cmpq -24(%rbp), %rax
-    jg L14
-    jmp L15
-L14:
-    movq -8(%rbp), %rdi
+    movq %rax, -4128(%rbp)
+    movq $1, %rax
+    movq %rax, -4144(%rbp)
+    movq -4128(%rbp), %rax
+    addq -4144(%rbp), %rax
+    movq %rax, -3600(%rbp)
+    movq -3600(%rbp), %rax
+    imulq $256, %rax
+    leaq -1536(%rbp), %rdx
+    addq %rax, %rdx
+    leaq -4656(%rbp), %rdi
+    movq %rdx, %rsi
+    call strcpy
+    movq $0, %rax
+    movq %rax, -4128(%rbp)
+    movq $1, %rax
+    movq %rax, -4144(%rbp)
+    movq -4128(%rbp), %rax
+    addq -4144(%rbp), %rax
+    movq %rax, -3600(%rbp)
+    movq -3600(%rbp), %rax
+    imulq $256, %rax
+    leaq -1536(%rbp), %rdx
+    addq %rax, %rdx
+    leaq -4912(%rbp), %rdi
+    movq %rdx, %rsi
+    call strcpy
+    leaq -5168(%rbp), %rdi
+    leaq -4656(%rbp), %rsi
+    call strcpy
+    leaq -5168(%rbp), %rdi
+    leaq -4912(%rbp), %rsi
+    call strcat
+    leaq -5168(%rbp), %rsi
+    leaq .str_print_string(%rip), %rdi
     movb $0, %al
-    call isPrime
-    movq %rax, -32(%rbp)
-    movq -32(%rbp), %rax
-    movq %rax, -16(%rbp)
-    movq -16(%rbp), %rdi
-    movb $0, %al
-    call printIsPrime
-    movq %rax, -40(%rbp)
-L15:
-    jmp L11
-L13:
+    call printf
     movq $0, %rax
     leave
     ret

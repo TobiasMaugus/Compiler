@@ -1,40 +1,13 @@
-void printIsPrime(int x){
-    if(x){
-        print("Is prime");
-    }else{
-        print("Is not prime");
-    }
-}
-
-int isPrime(int n) {
-    int i = 2;
-    
-    if (n < 2) {
-        return 0;
-    }
-
-    while (i < n) {
-        if (n % i == 0) {
-            return 0;
-        }
-        i = i + 1;
-    }
-
-    return 1;
-}
-
 int main() {
-    int num = 1;
-    int resultado = 0;
-
-    while (num > 0) {
-        read(num);
-        
-        if (num > 0) {
-            resultado = isPrime(num);
-            printIsPrime(resultado);
-        }
-    }
+    string matriz[2][3] = {"a", "b", "c", "d", "e", "f"}; 
+    print("--- Teste Matriz 2D INT ---");
+    
+    print("Elemento [1][2] (esperado 6):");
+    print(matriz[1][2]);
+    
+    matriz[0][1] = "ola";
+    print("Elemento [0][1] modificado (esperado 42):");
+    print(matriz[0][1]+matriz[0][1]);
 
     return 0;
 }
