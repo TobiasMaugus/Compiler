@@ -1,3 +1,11 @@
+void printIsPrime(int x){
+    if(x){
+        print("Is prime");
+    }else{
+        print("Is not prime");
+    }
+}
+
 int isPrime(int n) {
     int i = 2;
     
@@ -24,7 +32,7 @@ int main() {
         
         if (num > 0) {
             resultado = isPrime(num);
-            print(resultado);
+            printIsPrime(resultado);
         }
     }
 

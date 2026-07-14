@@ -16,7 +16,6 @@
 
 /* coluna atual do arquivo */
 int column = 1;
-
 int lexical_error = 0;
 
 /* linha e coluna iniciais do comentário*/
@@ -24,6 +23,8 @@ int comment_start_line = 1;
 int comment_start_column = 1;
 
 void print_token(char* token, char* lexema);
+char* process_char_literal(const char *raw, int len);
+char* process_string_literal(const char *raw, int len);
 
 %}
 
@@ -54,6 +55,18 @@ FLOATNUM   {DIGIT}+"."{DIGIT}+
     print_token("KW_FLOAT", yytext);
     column += yyleng;
     return KW_FLOAT;
+}
+
+"char" {
+    print_token("KW_CHAR", yytext);
+    column += yyleng;
+    return KW_CHAR;
+}
+
+"string" {
+    print_token("KW_STRING", yytext);
+    column += yyleng;
+    return KW_STRING;
 }
 
 "if" {
@@ -92,6 +105,12 @@ FLOATNUM   {DIGIT}+"."{DIGIT}+
     return KW_RETURN;
 }
 
+"void" {
+    print_token("KW_VOID", yytext);
+    column += yyleng;
+    return KW_VOID;
+}
+
 %{
 /* ------------------------ OPERADORES ----------------------- */
 %}
@@ -126,6 +145,67 @@ FLOATNUM   {DIGIT}+"."{DIGIT}+
 %{
 /* ------------------------ LITERAIS & IDENTIFICADORES ------------------------ */
 %}
+
+\'([^\'\\]|\\.)\' {
+    char *val = process_char_literal(yytext + 1, yyleng - 2);
+    if (!val) {
+        fprintf(stderr,
+            "[LEXICAL ERROR] Invalid character literal '%s' at Line %d, Column %d\n",
+            yytext, yylloc.first_line, yylloc.first_column);
+        lexical_error = 1;
+        column += yyleng;
+        return 0;
+    }
+    print_token("CHARLIT", val);
+    yylval.ival = (unsigned char)val[0];
+    free(val);
+    column += yyleng;
+    return CHARLIT;
+}
+
+\'\' {
+    fprintf(stderr,
+        "[LEXICAL ERROR] Empty character literal at Line %d, Column %d\n",
+        yylloc.first_line, yylloc.first_column);
+    lexical_error = 1;
+    column += yyleng;
+    return 0;
+}
+
+\'([^\'\n])* {
+    fprintf(stderr,
+        "[LEXICAL ERROR] Unterminated character literal at Line %d, Column %d\n",
+        yylloc.first_line, yylloc.first_column);
+    lexical_error = 1;
+    column += yyleng;
+    return 0;
+}
+
+\"([^\"\\]|\\.)*\" {
+    // Processa a string ignorando as aspas de abertura e de fecho (+1 e -2)
+    char *val = process_string_literal(yytext + 1, yyleng - 2);
+    if (!val) {
+        fprintf(stderr,
+            "[LEXICAL ERROR] Invalid string literal at Line %d, Column %d\n",
+            yylloc.first_line, yylloc.first_column);
+        lexical_error = 1;
+        column += yyleng;
+        return 0;
+    }
+    print_token("STRINGLIT", val);
+    yylval.str = val;
+    column += yyleng;
+    return STRINGLIT;
+}
+
+\"([^\"\\]|\\.)* {
+    fprintf(stderr,
+        "[LEXICAL ERROR] Unterminated string literal at Line %d, Column %d\n",
+        yylloc.first_line, yylloc.first_column);
+    lexical_error = 1;
+    column += yyleng;
+    return 0;
+}
 
 {FLOATNUM} {
     print_token("FLOATNUM", yytext);
@@ -218,7 +298,7 @@ FLOATNUM   {DIGIT}+"."{DIGIT}+
 
 %%
 
-/* ------------------------ IMPRESSÃO DOS TOKENS ------------------------ */
+/* ------------------------ IMPRESSÃO DOS TOKENS E PROCESSAMENTO ------------------------ */
 
 void print_token(char* token, char* lexema) {
     printf("%-15s | %-15s | %-5d | %-5d\n",
@@ -226,4 +306,56 @@ void print_token(char* token, char* lexema) {
            lexema,
            yylloc.first_line,
            yylloc.first_column);
+}
+
+static int decode_escape_char(const char *s, int len, char *out) {
+    if (len <= 0) return 0;
+    if (len == 1) {
+        *out = s[0];
+        return 1;
+    }
+    if (s[0] != '\\') return 0;
+    switch (s[1]) {
+        case 'n': *out = '\n'; return 1;
+        case 't': *out = '\t'; return 1;
+        case 'r': *out = '\r'; return 1;
+        case '\\': *out = '\\'; return 1;
+        case '"': *out = '"'; return 1;
+        case '\'': *out = '\''; return 1;
+        case '0': *out = '\0'; return 1;
+        default: return 0;
+    }
+}
+
+char* process_char_literal(const char *raw, int len) {
+    char *result = (char*)malloc(2);
+    if (!result) return NULL;
+    if (!decode_escape_char(raw, len, result)) {
+        free(result);
+        return NULL;
+    }
+    result[1] = '\0';
+    return result;
+}
+
+char* process_string_literal(const char *raw, int len) {
+    char *result = (char*)malloc(len + 1);
+    if (!result) return NULL;
+
+    int j = 0;
+    for (int i = 0; i < len; i++) {
+        if (raw[i] == '\\') {
+            char ch;
+            if (i + 1 >= len || !decode_escape_char(raw + i, 2, &ch)) {
+                free(result);
+                return NULL;
+            }
+            result[j++] = ch;
+            i++;
+        } else {
+            result[j++] = raw[i];
+        }
+    }
+    result[j] = '\0';
+    return result;
 }

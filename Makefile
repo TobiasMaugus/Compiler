@@ -4,7 +4,7 @@ all:
 	gcc parser.tab.c lex.yy.c -o compiler
 	gcc backend.c -o codegen
 
-run:
+run: all
 	./compiler test.txt
 	./codegen output.tac
 	gcc output.s -o executable -lc -no-pie
@@ -13,5 +13,10 @@ exec:
 	@echo "\n--- Executing the final program ---"
 	./executable
 
+runexec: run exec
+
 clean:
 	rm -f compiler codegen parser.tab.c parser.tab.h lex.yy.c output.tac output.s executable
+
+cleannooutput:
+	rm -f compiler codegen parser.tab.c parser.tab.h lex.yy.c executable
